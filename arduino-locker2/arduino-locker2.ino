@@ -1,9 +1,12 @@
 #define DEBUG_MODE 0
+#include "DHT.h"
 const int MODULE_RESET_PIN = 6;    //reset button that must be HIGH
-const int LED_B=13;                //built-in LED
-const int MODULE_POWERON_PIN=12;   //make this pin serial with a 1-10 Ohm resistor and connect it to `power on` switch pin. note than idle=HIGH and for power on we should LOW for 1sec then HIGH.
-const int REED_SWITCH_PIN=11;      //Door CLOSED (magnet near)=LOW, Door OPEN (magnet away)=HIGH
+const int DHT22_PIN=5;         //DHT22 temperature and humidity sensor
+const int LED_C=9;                 //new LED
 const int LED_A=10;
+const int REED_SWITCH_PIN=11;      //Door CLOSED (magnet near)=LOW, Door OPEN (magnet away)=HIGH
+const int MODULE_POWERON_PIN=12;   //make this pin serial with a 1-10 Ohm resistor and connect it to `power on` switch pin. note than idle=HIGH and for power on we should LOW for 1sec then HIGH.
+const int LED_B=13;                //built-in LED
 
 char ch='\0';
 String strBuf = "";
@@ -18,6 +21,7 @@ int intErrCountSms=0;
 
 int intTemperature=-1;
 int intHumidity=-1;
+int intVolt=-1;
 
 int intReedState=0;
 int intOldReedState=HIGH;                     //HIGH=1 Reed Switch not connected, Door is open
@@ -291,6 +295,7 @@ void loop() {
                   if (isAlaramOn==false) strSms+="OFF"; else strSms+="ON";
                   strSms+="\r\nDoor is "+strSender;
                   strSms+="\r\nT:"+String(intTemperature)+" H:"+String(intHumidity);
+                  strSms+="\r\nVolt:"+String(intVolt);
                 }else if(strBody=="r"){
                   strSms="Restarting...";                  
                   intNextStepNo=400;                //restart both SIM and Arduino
