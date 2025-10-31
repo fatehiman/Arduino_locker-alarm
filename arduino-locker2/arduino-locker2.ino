@@ -1,17 +1,26 @@
 #define DEBUG_MODE 0
+
+#include <EEPROM.h>
 #include "DHT.h"
+
+#define DHTPIN 5 //DHT22 temperature and humidity sensor
+#define DHTTYPE DHT22
+
+DHT dht(DHTPIN, DHTTYPE);
+
 const int MODULE_RESET_PIN = 6;    //reset button that must be HIGH
-const int DHT22_PIN=5;         //DHT22 temperature and humidity sensor
-const int LED_C=9;                 //new LED
 const int LED_A=10;
 const int REED_SWITCH_PIN=11;      //Door CLOSED (magnet near)=LOW, Door OPEN (magnet away)=HIGH
 const int MODULE_POWERON_PIN=12;   //make this pin serial with a 1-10 Ohm resistor and connect it to `power on` switch pin. note than idle=HIGH and for power on we should LOW for 1sec then HIGH.
 const int LED_B=13;                //built-in LED
+const int LED_C=9;                 //new LED
+const int AnalogPinVoltMeter = A0;
 
 char ch='\0';
 String strBuf = "";
 String strSender="";
 String strBody="";
+String strTargetNumber="+989133169571";
 int intStepNo=0;
 int intNextStepNo=0;
 String strSms="";
@@ -21,7 +30,9 @@ int intErrCountSms=0;
 
 int intTemperature=-1;
 int intHumidity=-1;
-int intVolt=-1;
+int intTemperature2=-2;
+int intHumidity2=-2;
+float intVolt=-1;
 
 int intReedState=0;
 int intOldReedState=HIGH;                     //HIGH=1 Reed Switch not connected, Door is open
@@ -31,10 +42,14 @@ int intPosB=0;
 int intPosE=0;
 int intPosE2=0;
 
-bool isAlaramOn=false;
+bool isAlarmOn=false;
 bool isStartupSmsSent=false;
 unsigned long intSecCounter=0;
 unsigned long intOldSecCounterMillis=0;
+unsigned long intOldTime_ReadTemperatureAndVolt=0;
+unsigned long intOldTime_ReadReedStatus=0;
+unsigned long intOldTime_HourlySms=0;
+unsigned long intOldTime_VoltageSms=0;
 
 unsigned long intLedCount=0;
 unsigned long intOldTime = 0;
@@ -62,6 +77,7 @@ void setup() {
   pinMode(MODULE_RESET_PIN, OUTPUT);
   pinMode(MODULE_POWERON_PIN, OUTPUT);
   pinMode(LED_A, OUTPUT);
+  pinMode(LED_C, OUTPUT);
   pinMode(REED_SWITCH_PIN, INPUT_PULLUP);  // use internal pull-up resistor
   
   digitalWrite(MODULE_RESET_PIN, HIGH);      //HIGH=idle (no reset)
@@ -75,6 +91,8 @@ void setup() {
   #if DEBUG_MODE
   Serial.println("SIM900 test ready! Type AT commands:");
   #endif
+
+  dht.begin();
   
 }
 
@@ -96,7 +114,7 @@ void loop() {
     _oldStep=intStepNo;
   }
   #endif
-
+  
   intElapsed=millis()-intOldTime;
   switch(intStepNo){
     case 0:               //device start: wait 3 sec      
@@ -178,6 +196,7 @@ void loop() {
     case 12:
       //del all sms
       strBuf="";
+      strTargetNumber="+989133169571";        //set default receiver
       Serial1.println("AT+CMGD=1,4");
       intNextStepNo=13;
       intStepNo=500;
@@ -193,32 +212,70 @@ void loop() {
       }
       
       //Reed state change
-      intReedState=digitalRead(REED_SWITCH_PIN);
-      if (intReedState!=intOldReedState) {
-        if (millis()-intReedLastChangeTime>1000){                 //if changed and it is last more than 1 sec since last change, then change is not because of noise
-          turnOnLedA();
-          #if DEBUG_MODE
-          Serial.println("Reed status changed to:" + String(intReedState) + " ("+strSender+") " + String(millis()));
-          #endif
-          if (intReedState==1) strSender="OPENED"; else strSender="CLOSED";
-          intOldReedState=intReedState;
-          intReedLastChangeTime=millis();
-          if (isAlaramOn){                     //Alarm on state change
-            //send sms then call
-            strSms="!!!ALARM!!!\r\nDoor "+strSender;
-            intNextStepNo=20;              //make a call
+      if (millis()-intOldTime_ReadReedStatus>100){
+        intOldTime_ReadReedStatus=millis();
+        intReedState=digitalRead(REED_SWITCH_PIN);
+        if (intReedState!=intOldReedState) {
+          if (millis()-intReedLastChangeTime>1000){                 //if changed and it is last more than 1 sec since last change, then change is not because of noise
+            turnOnLedA();
+            #if DEBUG_MODE
+            Serial.println("Reed status changed to:" + String(intReedState) + " ("+strSender+") " + String(millis()));
+            #endif
+            if (intReedState==1) strSender="OPENED"; else strSender="CLOSED";
+            intOldReedState=intReedState;
+            intReedLastChangeTime=millis();
+            if (isAlarmOn){                     //Alarm on state change
+              //send sms then call
+              strSms="!!!ALARM!!!\r\nDoor "+strSender;
+              intNextStepNo=20;              //make a call
+              intStepNo=600;                //send sms
+            }
+          }
+        }else{        
+          intReedLastChangeTime=millis();       //state is stable, reset timer to now for next change
+        }
+      }
+
+      //read volt and temperature/humidity every 2min
+      if (intStepNo==13){
+        if (millis()-intOldTime_ReadTemperatureAndVolt>120000 || intOldTime_ReadTemperatureAndVolt==0){
+          //read temperature and humidity
+          intTemperature=round(dht.readTemperature());
+          intHumidity=round(dht.readHumidity());
+          delay(3000);
+          intTemperature2=round(dht.readTemperature());
+          intHumidity2=round(dht.readHumidity());
+          if (intTemperature!=intTemperature2) intTemperature=-333;
+          if (intHumidity!=intHumidity2) intHumidity=-333;
+          //calc voltage
+          int rawValue = analogRead(AnalogPinVoltMeter);
+          float voltageAtPin = (rawValue / 1023.0) * 5;
+          intVolt=voltageAtPin * (10000.0 + 4700.0) / 4700.0;
+  
+          intOldTime_ReadTemperatureAndVolt=millis();
+        }
+  
+        //send battery voltage alarm
+        if (intVolt<10.5){
+          if (millis()-intOldTime_VoltageSms>600000){
+            intOldTime_VoltageSms=millis();
+            strSms="Battery decharge warning:\r\n";
+            strSms+="\r\nVolt:"+String(intVolt);
+            intNextStepNo=12;             //del all sms
             intStepNo=600;                //send sms
           }
         }
-      }else{        
-        intReedLastChangeTime=millis();       //state is stable, reset timer to now for next change
       }
 
       //send startup sms
-      if (intStepNo==13){
-        if (intSecCounter>2 && isStartupSmsSent==false){
+      if (isStartupSmsSent==false){
+        if (intSecCounter>2 && intStepNo==13){
           if (intOldReedState==1) strSender="OPEN"; else strSender="CLOSED";
-          strSms="Started\r\nAlarm is OFF\r\nDoor is "+strSender;
+          isAlarmOn=EEPROM.read(0);
+          if (isAlarmOn) strSms="ON"; else strSms="OFF";
+          strSms="Started\r\nAlarm is "+strSms+"\r\nDoor is "+strSender;
+          strSms+="\r\nT:"+String(intTemperature)+" H:"+String(intHumidity);
+          strSms+="\r\nVolt:"+String(intVolt);
           intNextStepNo=12;             //del all sms
           intStepNo=600;                //send sms
           isStartupSmsSent=true;
@@ -267,9 +324,10 @@ void loop() {
                 if (intOldReedState==1) strSender="OPEN"; else strSender="CLOSED";
                 if (strBody=="0"){
                   //disable alarm
+                  EEPROM.write(0,0);
                   strSms="Alarm ";
-                  if (isAlaramOn==true){
-                    isAlaramOn=false;
+                  if (isAlarmOn==true){
+                    isAlarmOn=false;
                     strSms+="turned";
                   }else{
                     strSms+="was already";
@@ -277,13 +335,14 @@ void loop() {
                   strSms+=" OFF.\r\nDoor is "+strSender+".";
                 }else if(strBody=="1"){
                   //enable alarm
+                  EEPROM.write(0,1);
                   strSms="Alarm ";
-                  if (isAlaramOn==false){
+                  if (isAlarmOn==false){
                     //if door is open, do not turn alarm ON
                     if (intOldReedState==1){
                       strSms+="can not be enabled because ";
                     }else{
-                      isAlaramOn=true;
+                      isAlarmOn=true;
                       strSms+="turned ON.\r\n";
                     }
                   }else{
@@ -292,7 +351,7 @@ void loop() {
                   strSms+="Door is "+strSender+".";
                 }else if(strBody=="?"){
                   strSms="Alarm is ";
-                  if (isAlaramOn==false) strSms+="OFF"; else strSms+="ON";
+                  if (isAlarmOn==false) strSms+="OFF"; else strSms+="ON";
                   strSms+="\r\nDoor is "+strSender;
                   strSms+="\r\nT:"+String(intTemperature)+" H:"+String(intHumidity);
                   strSms+="\r\nVolt:"+String(intVolt);
@@ -342,6 +401,27 @@ void loop() {
           intNextStepNo=400;             //critical error: reset module then reset arduino
           intStepNo=600;                //send sms          
         }
+        /*
+        digitalWrite(LED_B, HIGH);
+        digitalWrite(LED_C, HIGH);
+        delay(50);
+        digitalWrite(LED_B, LOW);
+        digitalWrite(LED_C, LOW);
+        delay(250);
+        */
+      }
+      if (intStepNo==13 && isStartupSmsSent){
+        if (millis()-intOldTime_HourlySms>3600000 || intOldTime_HourlySms==0){
+          intOldTime_HourlySms=millis();
+          strSms="Alarm is ";
+          if (isAlarmOn==false) strSms+="OFF"; else strSms+="ON";
+          strSms+="\r\nDoor is "+strSender;
+          strSms+="\r\nT:"+String(intTemperature)+" H:"+String(intHumidity);
+          strSms+="\r\nVolt:"+String(intVolt);
+          strTargetNumber="+989352628356";
+          intNextStepNo=12;
+          intStepNo=600;              //send sms
+        }
       }
       break;
 
@@ -383,9 +463,11 @@ void loop() {
       for (intErrCount=0;intErrCount<10;intErrCount++){
         digitalWrite(LED_A, HIGH);
         digitalWrite(LED_B, HIGH);
+        digitalWrite(LED_C, HIGH);
         delay(1000);
         digitalWrite(LED_A, LOW);
         digitalWrite(LED_B, LOW);
+        digitalWrite(LED_C, LOW);
         delay(1000);
       }
       #if DEBUG_MODE
@@ -444,7 +526,7 @@ void loop() {
       Serial.println("send SMS: " + strSms);      
       #endif
       strBuf="";
-      Serial1.println("AT+CMGS=\"+989133169571\"");
+      Serial1.println("AT+CMGS=\""+strTargetNumber+"\"");
       intOldTime=millis();
       intStepNo=602;      
       break;
@@ -465,7 +547,7 @@ void loop() {
       break;
 
     case 603:
-      if (intElapsed<40000){              //40sec wait for sms send
+      if (intElapsed<60000){              //40sec wait for sms send
         if (strBuf.indexOf("\r\nOK\r\n")!=-1){
           //sms sent successfully
           intStepNo=intNextStepNo;
@@ -494,14 +576,14 @@ void loop() {
     
   }
 
-
-
   //blink onboad LED
   intLedCount++;
   if (intLedCount==5000){
     digitalWrite(LED_B, HIGH);
-  }else if (intLedCount==10000){
+    digitalWrite(LED_C, HIGH);
+  }else if (intLedCount==5100){
     digitalWrite(LED_B, LOW);
+    digitalWrite(LED_C, LOW);
     intLedCount=0;
   }
 
