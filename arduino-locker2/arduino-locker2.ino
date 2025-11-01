@@ -18,7 +18,7 @@ const int AnalogPinVoltMeter = A0;
 
 char ch='\0';
 String strBuf = "";
-String strSender="";
+String strTemp="";
 String strBody="";
 String strTargetNumber="+989133169571";
 int intStepNo=0;
@@ -137,7 +137,7 @@ void loop() {
         if (strBuf.indexOf("OK\r\n")!=-1){
           //module is ON
           strBuf="";
-          intStepNo=10;
+          intStepNo=9;
         }else{
           //module is OFF so turn it ON
           #if DEBUG_MODE
@@ -171,7 +171,7 @@ void loop() {
       }
       break;
 
-    case 10:
+    case 9:
       //check if network is registered by sending AT+CREG?
       turnOnLedA();
       strBuf="";
@@ -179,20 +179,28 @@ void loop() {
       Serial.println("sending AT+CREG...");
       #endif
       Serial1.println("AT+CREG?");      
-      intNextStepNo=11;
+      intNextStepNo=10;
       intStepNo=500;
       break;
 
-    case 11:
+    case 10:
       //check result of AT+CREG? 
       if (strBuf.indexOf("+CREG: 0,1")==-1){
         //not registered, so critical error and reboot
         intStepNo=400;
       }else{
-        intStepNo=12;
+        Serial1.println("AT+CSCLK=1");
+        intNextStepNo=11;
+        intStepNo=500;
       }      
       break;
-
+      
+    case 11:
+        Serial1.println("AT+CNETLIGHT=0");
+        intNextStepNo=12;
+        intStepNo=500;
+      break;
+      
     case 12:
       //del all sms
       strBuf="";
@@ -219,14 +227,15 @@ void loop() {
           if (millis()-intReedLastChangeTime>1000){                 //if changed and it is last more than 1 sec since last change, then change is not because of noise
             turnOnLedA();
             #if DEBUG_MODE
-            Serial.println("Reed status changed to:" + String(intReedState) + " ("+strSender+") " + String(millis()));
+            Serial.println("Reed status changed to:" + String(intReedState) + " ("+strTemp+") " + String(millis()));
             #endif
-            if (intReedState==1) strSender="OPENED"; else strSender="CLOSED";
+            if (intReedState==1) strTemp="OPENED"; else strTemp="CLOSED";
             intOldReedState=intReedState;
             intReedLastChangeTime=millis();
             if (isAlarmOn){                     //Alarm on state change
-              //send sms then call
-              strSms="!!!ALARM!!!\r\nDoor "+strSender;
+              //send alarm sms then call
+              strTargetNumber="+989133169571";
+              strSms="!!!ALARM!!!\r\nDoor "+strTemp;
               intNextStepNo=20;              //make a call
               intStepNo=600;                //send sms
             }
@@ -257,9 +266,9 @@ void loop() {
   
         //send battery voltage alarm
         if (intVolt<10.5){
-          if (millis()-intOldTime_VoltageSms>600000){
+          if (millis()-intOldTime_VoltageSms>3600000 || intOldTime_VoltageSms==0){
             intOldTime_VoltageSms=millis();
-            strSms="Battery decharge warning:\r\n";
+            strSms="Low batter warning:\r\n";
             strSms+="\r\nVolt:"+String(intVolt);
             intNextStepNo=12;             //del all sms
             intStepNo=600;                //send sms
@@ -270,14 +279,22 @@ void loop() {
       //send startup sms
       if (isStartupSmsSent==false){
         if (intSecCounter>2 && intStepNo==13){
-          if (intOldReedState==1) strSender="OPEN"; else strSender="CLOSED";
+          if (intOldReedState==1) strTemp="OPEN"; else strTemp="CLOSED";
           isAlarmOn=EEPROM.read(0);
           if (isAlarmOn) strSms="ON"; else strSms="OFF";
-          strSms="Started\r\nAlarm is "+strSms+"\r\nDoor is "+strSender;
-          strSms+="\r\nT:"+String(intTemperature)+" H:"+String(intHumidity);
-          strSms+="\r\nVolt:"+String(intVolt);
-          intNextStepNo=12;             //del all sms
-          intStepNo=600;                //send sms
+          if (isAlarmOn && intOldReedState==1){
+              //send alarm sms then call
+              strTargetNumber="+989133169571";
+              strSms="!!!ALARM!!!\r\nDoor OPEN on start";
+              intNextStepNo=20;              //make a call
+              intStepNo=600;                //send sms          
+          }else{
+            strSms="Started\r\nAlarm is "+strSms+"\r\nDoor is "+strTemp;
+            strSms+="\r\nT:"+String(intTemperature)+" H:"+String(intHumidity);
+            strSms+="\r\nVolt:"+String(intVolt);
+            intNextStepNo=12;             //del all sms
+            intStepNo=600;                //send sms
+          }
           isStartupSmsSent=true;
         }
       }
@@ -300,12 +317,12 @@ void loop() {
             intPosE=strBuf.indexOf('"',intPosB);    //next double-quote
             if (intPosE!=-1){
               //fetch sender number
-              strSender=strBuf.substring(intPosB,intPosE);
-              if (strSender.indexOf("+98")!=-1){
-                strSender="0"+strSender.substring(3);
+              strTemp=strBuf.substring(intPosB,intPosE);
+              if (strTemp.indexOf("+98")!=-1){
+                strTemp="0"+strTemp.substring(3);
               }
               #if DEBUG_MODE
-              Serial.println("sender detected:"+strSender);
+              Serial.println("sender detected:"+strTemp);
               #endif
               intPosB=strBuf.indexOf("\r\n",intPosE);           //this \r\n is definitely exist, because this is first counted \r\n
               intPosB+=2;                                       //start of message body
@@ -316,12 +333,12 @@ void loop() {
               if (intPosE2<intPosE) intPosE=intPosE2;
               strBody=strBuf.substring(intPosB,intPosE);
               #if DEBUG_MODE
-              Serial.println("{"+strSender+"} {"+strBody+"}");
+              Serial.println("{"+strTemp+"} {"+strBody+"}");
               #endif
               //process received SMS:
-              if (strSender=="09133169571" || strSender=="09031238058"){
+              if (strTemp=="09133169571" || strTemp=="09031238058"){
                 intNextStepNo=12;             //del all sms
-                if (intOldReedState==1) strSender="OPEN"; else strSender="CLOSED";
+                if (intOldReedState==1) strTemp="OPEN"; else strTemp="CLOSED";
                 if (strBody=="0"){
                   //disable alarm
                   EEPROM.write(0,0);
@@ -332,7 +349,7 @@ void loop() {
                   }else{
                     strSms+="was already";
                   }
-                  strSms+=" OFF.\r\nDoor is "+strSender+".";
+                  strSms+=" OFF.\r\nDoor is "+strTemp+".";
                 }else if(strBody=="1"){
                   //enable alarm
                   EEPROM.write(0,1);
@@ -348,11 +365,11 @@ void loop() {
                   }else{
                     strSms+="was already ON.\r\n";
                   }
-                  strSms+="Door is "+strSender+".";
+                  strSms+="Door is "+strTemp+".";
                 }else if(strBody=="?"){
                   strSms="Alarm is ";
                   if (isAlarmOn==false) strSms+="OFF"; else strSms+="ON";
-                  strSms+="\r\nDoor is "+strSender;
+                  strSms+="\r\nDoor is "+strTemp;
                   strSms+="\r\nT:"+String(intTemperature)+" H:"+String(intHumidity);
                   strSms+="\r\nVolt:"+String(intVolt);
                 }else if(strBody=="r"){
@@ -415,7 +432,8 @@ void loop() {
           intOldTime_HourlySms=millis();
           strSms="Alarm is ";
           if (isAlarmOn==false) strSms+="OFF"; else strSms+="ON";
-          strSms+="\r\nDoor is "+strSender;
+          strSms+="\r\nDoor is ";          
+          if (intOldReedState==1) strSms+="OPEN"; else strSms+="CLOSED";
           strSms+="\r\nT:"+String(intTemperature)+" H:"+String(intHumidity);
           strSms+="\r\nVolt:"+String(intVolt);
           strTargetNumber="+989352628356";
@@ -579,10 +597,10 @@ void loop() {
   //blink onboad LED
   intLedCount++;
   if (intLedCount==5000){
-    digitalWrite(LED_B, HIGH);
+//    digitalWrite(LED_B, HIGH);
     digitalWrite(LED_C, HIGH);
   }else if (intLedCount==5100){
-    digitalWrite(LED_B, LOW);
+//    digitalWrite(LED_B, LOW);
     digitalWrite(LED_C, LOW);
     intLedCount=0;
   }
