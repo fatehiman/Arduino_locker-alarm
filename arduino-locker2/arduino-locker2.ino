@@ -1,5 +1,8 @@
 #define DEBUG_MODE 0
 
+#include <avr/sleep.h>  // For sleep functions
+#include <avr/power.h>    
+
 #include <EEPROM.h>
 #include "DHT.h"
 
@@ -268,12 +271,20 @@ void loop() {
         if (intVolt<10.5){
           if (millis()-intOldTime_VoltageSms>3600000 || intOldTime_VoltageSms==0){
             intOldTime_VoltageSms=millis();
-            strSms="Low batter warning:\r\n";
+            strSms="Low battery warning:\r\n";
             strSms+="\r\nVolt:"+String(intVolt);
             intNextStepNo=12;             //del all sms
             intStepNo=600;                //send sms
           }
         }
+
+        if (intVolt<=10){
+          strSms="Very low batter:\r\n";
+          strSms+="\r\nVolt:"+String(intVolt);
+          strSms+="\r\"Shutting down...";
+          intNextStepNo=300;             //shutdown
+          intStepNo=600;                //send sms        
+        }        
       }
 
       //send startup sms
@@ -338,7 +349,9 @@ void loop() {
               //process received SMS:
               if (strTemp=="09133169571" || strTemp=="09031238058"){
                 intNextStepNo=12;             //del all sms
+                intStepNo=600;                //send sms
                 if (intOldReedState==1) strTemp="OPEN"; else strTemp="CLOSED";
+                strBody.toLowerCase();
                 if (strBody=="0"){
                   //disable alarm
                   EEPROM.write(0,0);
@@ -375,12 +388,26 @@ void loop() {
                 }else if(strBody=="r"){
                   strSms="Restarting...";                  
                   intNextStepNo=400;                //restart both SIM and Arduino
+                }else if(strBody=="o"){
+                  strSms="Shutting down...";                  
+                  intNextStepNo=300;                //Shutdown
+                }else if(strBody=="s"){
+                  strBuf="";
+                  Serial1.println("AT+CSQ");
+                  intNextStepNo=200;                //send signal
+                  intStepNo=500;
+                }else if(strBody=="h"){
+                  strSms="0=Switch OFF alarm\r\n";
+                  strSms+="1=Switch ON\r\n";
+                  strSms+="?=Info\r\n";
+                  strSms+="s=Signal quality\r\n";
+                  strSms+="r=Restart\r\n";
+                  strSms+="o=Power off";
                 }else{
                   //wrong command                
                   strBody=strBody.substring(0,140);             //max=160
                   strSms="Unknown command: "+strBody;                
                 }
-                intStepNo=600;                //send sms
               }else{
                 #if DEBUG_MODE
                 Serial.println("untrusted sender, so just del all sms.");
@@ -470,6 +497,77 @@ void loop() {
       break;
       
 
+    /*---------------------------------*/
+    /*get and send signal strngth via sms*/
+    case 200:
+      /*Sample response:
+      AT+CSQ
+      +CSQ: <rssi>,<ber>
+      OK
+      */
+      strSms="Error retirieving signal strength";
+      intStepNo=600;            //send sms
+      intNextStepNo=12;
+      intPosB=strBuf.indexOf("+CSQ: ");
+      if (intPosB>0){
+        intPosB+=6;
+        intPosE=strBuf.indexOf(",",intPosB);
+        strSms=strBuf.substring(intPosB,intPosE);
+        int rssi=strSms.toInt();
+        strSms+=":";
+        if (rssi == 99) strSms+="No signal";
+        else if (rssi == 0) strSms+="Very poor (1/8)";
+        else if (rssi == 1) strSms+="Poor (2/8)";
+        else if (rssi >= 2 && rssi <= 9) strSms+="Weak (3/8)";
+        else if (rssi >= 10 && rssi <= 14) strSms+="Fair (4/8)";
+        else if (rssi >= 15 && rssi <= 19) strSms+="Good (5/8)";
+        else if (rssi >= 20 && rssi <= 25) strSms+="Very good (6/8)";
+        else if (rssi >= 26 && rssi <= 30) strSms+="Excellent (7/8)";
+        else if (rssi == 31) strSms+="Max signal (8/8)";
+        else strSms+="Unknown";          
+      }
+      break;
+    /*---------------------------------*/
+    /*shutdown*/
+    case 300:
+      strBuf="";
+      //Serial1.println("AT+CPOWD=1");
+      Serial1.println("AT+QPOWD");
+      intNextStepNo=301;
+      intStepNo=500;
+      break;
+      
+    case 301:
+      // Disable ADC
+      ADCSRA = 0;
+      // Disable Analog Comparator
+      ACSR |= (1 << 7);  // ACD bit 7 (no define needed)
+      // Disable BOD (fixed version above)
+      MCUCR |= (1 << 6) | (1 << 7);
+      MCUCR = (MCUCR & ~(1 << 6)) | (1 << 7);
+      // Set all pins to input (no pull-up)
+      for (uint8_t i = 0; i < 20; i++) {
+        pinMode(i, INPUT);
+        digitalWrite(i, LOW);
+      }
+      pinMode(LED_BUILTIN, OUTPUT);  // LED_BUILTIN is 13 on Leonardo
+      digitalWrite(LED_BUILTIN, LOW);  // Now this works—drives pin low, LED off      
+      // Disable peripherals
+      power_all_disable();  // Or manually: PRR0 = 0xFF; PRR1 = 0xFF;
+      // Set sleep mode to Power-Down
+      set_sleep_mode(SLEEP_MODE_PWR_DOWN);
+      sleep_enable();
+      // Disable interrupts (no wake-ups)
+      cli();
+      // Enter sleep forever (or until reset)
+      sleep_mode();
+      intStepNo=302;
+      break;
+
+    case 302:
+      delay(10000);
+      break;
+      
     /*---------------------------------*/
     /*critical error: blink 10 times then reboot*/
     case 400:
